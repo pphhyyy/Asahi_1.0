@@ -1,0 +1,129 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:padding="24dp"
+    android:gravity="center">
+
+    <TextView
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="实时翻译"
+        android:textSize="32sp"
+        android:textStyle="bold"
+        android:textColor="@color/primary"
+        android:layout_marginBottom="8dp" />
+
+    <TextView
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="悬浮窗 OCR 实时翻译工具"
+        android:textSize="14sp"
+        android:textColor="#666666"
+        android:layout_marginBottom="32dp" />
+
+    <!-- API 状态 -->
+    <TextView
+        android:id="@+id/tvApiStatus"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="⚠️ 请先配置 API"
+        android:textSize="14sp"
+        android:gravity="center"
+        android:padding="12dp"
+        android:background="#FFF3E0"
+        android:layout_marginBottom="24dp" />
+
+    <!-- 开始/停止按钮 -->
+    <com.google.android.material.button.MaterialButton
+        android:id="@+id/btnToggle"
+        android:layout_width="200dp"
+        android:layout_height="56dp"
+        android:text="@string/start_overlay"
+        android:textSize="18sp"
+        android:layout_marginBottom="16dp" />
+
+    <!-- 设置按钮 -->
+    <com.google.android.material.button.MaterialButton
+        android:id="@+id/btnSettings"
+        style="@style/Widget.MaterialComponents.Button.OutlinedButton"
+        android:layout_width="200dp"
+        android:layout_height="48dp"
+        android:text="@string/settings"
+        android:textSize="16sp"
+        android:layout_marginBottom="16dp" />
+
+    <!-- 透明度设置 -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:padding="16dp"
+        android:background="#F5F5F5"
+        android:layout_marginBottom="16dp">
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:gravity="center_vertical">
+
+            <TextView
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="悬浮窗背景透明度"
+                android:textSize="14sp" />
+
+            <TextView
+                android:id="@+id/tvAlphaValue"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="50%"
+                android:textSize="14sp"
+                android:textColor="@color/primary" />
+        </LinearLayout>
+
+        <SeekBar
+            android:id="@+id/seekBarAlpha"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:max="255"
+            android:progress="128"
+            android:layout_marginTop="4dp" />
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal">
+
+            <TextView
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="透明"
+                android:textSize="11sp"
+                android:textColor="#999999" />
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="不透明"
+                android:textSize="11sp"
+                android:textColor="#999999" />
+        </LinearLayout>
+    </LinearLayout>
+
+    <!-- 使用说明 -->
+    <TextView
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="使用说明：\n1. 先在「设置」中配置 API Key\n2. 点击「开始翻译」启动悬浮窗\n3. 拖动翻译窗口到需要翻译的文字上方\n4. 点击悬浮圆形按钮开始翻译\n5. 译文会覆盖显示在翻译窗口中\n6. 长按圆形按钮可关闭悬浮窗"
+        android:textSize="13sp"
+        android:textColor="#888888"
+        android:lineSpacingExtra="4dp"
+        android:padding="16dp"
+        android:background="#F5F5F5" />
+
+</LinearLayout>

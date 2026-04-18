@@ -1,0 +1,507 @@
+package com.translator.app.overlay
+
+import android.annotation.SuppressLint
+import android.app.Notification
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.PendingIntent
+import android.app.Service
+import android.content.Context
+import android.content.Intent
+import android.content.pm.ServiceInfo
+import android.graphics.Bitmap
+import android.graphics.Color
+import android.graphics.PixelFormat
+import android.graphics.drawable.GradientDrawable
+import android.hardware.display.DisplayManager
+import android.hardware.display.VirtualDisplay
+import android.media.ImageReader
+import android.media.projection.MediaProjection
+import android.media.projection.MediaProjectionManager
+import android.os.Build
+import android.os.Handler
+import android.os.IBinder
+import android.os.Looper
+import android.util.DisplayMetrics
+import android.util.Log
+import android.view.Gravity
+import android.view.LayoutInflater
+import android.view.MotionEvent
+import android.view.View
+import android.view.WindowManager
+import android.widget.ProgressBar
+import android.widget.TextView
+import android.widget.Toast
+import com.google.mlkit.vision.common.InputImage
+import com.google.mlkit.vision.text.TextRecognition
+import com.google.mlkit.vision.text.chinese.ChineseTextRecognizerOptions
+import com.google.mlkit.vision.text.latin.TextRecognizerOptions
+import com.google.mlkit.vision.text.japanese.JapaneseTextRecognizerOptions
+import com.google.mlkit.vision.text.korean.KoreanTextRecognizerOptions
+import com.translator.app.AppConfig
+import com.translator.app.MainActivity
+import com.translator.app.R
+import com.translator.app.TranslationApi
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.launch
+
+class OverlayService : Service() {
+
+    private lateinit var windowManager: WindowManager
+    private lateinit var overlayView: View
+    private lateinit var fabView: View
+    private lateinit var params: WindowManager.LayoutParams
+    private lateinit var fabParams: WindowManager.LayoutParams
+    private lateinit var config: AppConfig
+    private lateinit var translationApi: TranslationApi
+
+    private var mediaProjection: MediaProjection? = null
+    private var virtualDisplay: VirtualDisplay? = null
+    private var imageReader: ImageReader? = null
+    @Volatile
+    private var latestBitmap: Bitmap? = null
+
+    private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
+    private val handler = Handler(Looper.getMainLooper())
+
+    private val TAG = "OverlayService"
+
+    private var screenWidth = 0
+    private var screenHeight = 0
+    private var screenDensity = 0
+
+    // 悬浮窗默认尺寸
+    private var overlayWidth = 350
+    private var overlayHeight = 300
+
+    companion object {
+        const val CHANNEL_ID = "translator_overlay"
+        const val NOTIFICATION_ID = 1
+        const val EXTRA_RESULT_CODE = "result_code"
+        const val EXTRA_RESULT_DATA = "result_data"
+
+        private var instance: OverlayService? = null
+
+        fun stopService() {
+            instance?.stopSelf()
+        }
+    }
+
+    override fun onBind(intent: Intent?): IBinder? = null
+
+    override fun onCreate() {
+        super.onCreate()
+        instance = this
+        config = AppConfig(this)
+        translationApi = TranslationApi(config)
+
+        windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
+
+        // 获取屏幕参数
+        val metrics = DisplayMetrics()
+        @Suppress("DEPRECATION")
+        windowManager.defaultDisplay.getMetrics(metrics)
+        screenWidth = metrics.widthPixels
+        screenHeight = metrics.heightPixels
+        screenDensity = metrics.densityDpi
+
+        // 将 dp 转为 px
+        val density = metrics.density
+        overlayWidth = (350 * density).toInt()
+        overlayHeight = (300 * density).toInt()
+    }
+
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        createNotificationChannel()
+
+        // 关键：必须先 startForeground 指定 MEDIA_PROJECTION 类型
+        // 然后才能调用 getMediaProjection()
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            startForeground(
+                NOTIFICATION_ID,
+                createNotification(),
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION
+            )
+        } else {
+            startForeground(NOTIFICATION_ID, createNotification())
+        }
+
+        // 从 Activity 的静态变量获取授权数据，在前台服务已启动后才创建 MediaProjection
+        val resultCode = MainActivity.pendingResultCode
+        val resultData = MainActivity.pendingResultData
+        MainActivity.pendingResultCode = android.app.Activity.RESULT_CANCELED
+        MainActivity.pendingResultData = null
+
+        if (resultCode == android.app.Activity.RESULT_OK && resultData != null) {
+            try {
+                val projectionManager = getSystemService(MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
+                mediaProjection = projectionManager.getMediaProjection(resultCode, resultData)
+
+                // Android 14+ 必须注册 Callback
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                    mediaProjection?.registerCallback(object : MediaProjection.Callback() {
+                        override fun onStop() {
+                            Log.d(TAG, "MediaProjection stopped")
+                            cleanupProjection()
+                        }
+                    }, handler)
+                }
+
+                setupImageReader()
+                Log.d(TAG, "MediaProjection 初始化成功, projection=$mediaProjection")
+            } catch (e: Exception) {
+                Log.e(TAG, "MediaProjection 初始化失败", e)
+            }
+        } else {
+            Log.e(TAG, "未收到截屏授权数据, resultCode=$resultCode, resultData=$resultData")
+        }
+
+        setupOverlay()
+        return START_NOT_STICKY
+    }
+
+    private fun setupImageReader() {
+        imageReader = ImageReader.newInstance(screenWidth, screenHeight, PixelFormat.RGBA_8888, 2)
+
+        // 使用 listener 持续捕获最新帧，保存到 latestBitmap
+        imageReader!!.setOnImageAvailableListener({ reader ->
+            val image = reader.acquireLatestImage() ?: return@setOnImageAvailableListener
+            try {
+                val planes = image.planes
+                val buffer = planes[0].buffer
+                val pixelStride = planes[0].pixelStride
+                val rowStride = planes[0].rowStride
+                val rowPadding = rowStride - pixelStride * screenWidth
+
+                val bmp = Bitmap.createBitmap(
+                    screenWidth + rowPadding / pixelStride,
+                    screenHeight,
+                    Bitmap.Config.ARGB_8888
+                )
+                bmp.copyPixelsFromBuffer(buffer)
+
+                val finalBmp = if (bmp.width > screenWidth) {
+                    val cropped = Bitmap.createBitmap(bmp, 0, 0, screenWidth, screenHeight)
+                    bmp.recycle()
+                    cropped
+                } else {
+                    bmp
+                }
+
+                // 替换旧的缓存帧
+                val old = latestBitmap
+                latestBitmap = finalBmp
+                old?.recycle()
+            } catch (e: Exception) {
+                Log.e(TAG, "解析屏幕帧失败", e)
+            } finally {
+                image.close()
+            }
+        }, handler)
+
+        virtualDisplay = mediaProjection?.createVirtualDisplay(
+            "ScreenCapture",
+            screenWidth, screenHeight, screenDensity,
+            DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
+            imageReader!!.surface, null, handler
+        )
+        Log.d(TAG, "VirtualDisplay 已创建: ${screenWidth}x${screenHeight}, density=$screenDensity")
+    }
+
+    private fun cleanupProjection() {
+        virtualDisplay?.release()
+        virtualDisplay = null
+        imageReader?.close()
+        imageReader = null
+        latestBitmap?.recycle()
+        latestBitmap = null
+    }
+
+    @SuppressLint("ClickableViewAccessibility")
+    private fun setupOverlay() {
+        val inflater = getSystemService(LAYOUT_INFLATER_SERVICE) as LayoutInflater
+
+        // === 翻译窗口（纯净，无工具栏）===
+        overlayView = inflater.inflate(R.layout.overlay_layout, null)
+
+        // 应用背景透明度
+        applyOverlayAlpha()
+
+        params = WindowManager.LayoutParams(
+            overlayWidth,
+            overlayHeight,
+            WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+            PixelFormat.TRANSLUCENT
+        ).apply {
+            gravity = Gravity.TOP or Gravity.START
+            x = (screenWidth - overlayWidth) / 2
+            y = screenHeight / 4
+        }
+
+        // 翻译窗口拖动（整个窗口可拖动）
+        var initialX = 0
+        var initialY = 0
+        var initialTouchX = 0f
+        var initialTouchY = 0f
+        var isDragging = false
+
+        overlayView.setOnTouchListener { _, event ->
+            when (event.action) {
+                MotionEvent.ACTION_DOWN -> {
+                    initialX = params.x
+                    initialY = params.y
+                    initialTouchX = event.rawX
+                    initialTouchY = event.rawY
+                    isDragging = false
+                    true
+                }
+                MotionEvent.ACTION_MOVE -> {
+                    val dx = event.rawX - initialTouchX
+                    val dy = event.rawY - initialTouchY
+                    if (dx * dx + dy * dy > 25) isDragging = true
+                    params.x = initialX + dx.toInt()
+                    params.y = initialY + dy.toInt()
+                    windowManager.updateViewLayout(overlayView, params)
+                    true
+                }
+                MotionEvent.ACTION_UP -> {
+                    isDragging
+                }
+                else -> false
+            }
+        }
+
+        windowManager.addView(overlayView, params)
+
+        // === 悬浮控制按钮 ===
+        fabView = inflater.inflate(R.layout.floating_button, null)
+
+        val fabSize = (48 * resources.displayMetrics.density).toInt()
+        fabParams = WindowManager.LayoutParams(
+            fabSize,
+            fabSize,
+            WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+            PixelFormat.TRANSLUCENT
+        ).apply {
+            gravity = Gravity.TOP or Gravity.START
+            x = screenWidth - fabSize - (16 * resources.displayMetrics.density).toInt()
+            y = screenHeight / 2
+        }
+
+        // 悬浮按钮拖动 + 点击翻译 + 长按关闭
+        var fabInitialX = 0
+        var fabInitialY = 0
+        var fabInitialTouchX = 0f
+        var fabInitialTouchY = 0f
+        var fabIsDragging = false
+
+        fabView.setOnTouchListener { _, event ->
+            when (event.action) {
+                MotionEvent.ACTION_DOWN -> {
+                    fabInitialX = fabParams.x
+                    fabInitialY = fabParams.y
+                    fabInitialTouchX = event.rawX
+                    fabInitialTouchY = event.rawY
+                    fabIsDragging = false
+                    true
+                }
+                MotionEvent.ACTION_MOVE -> {
+                    val dx = event.rawX - fabInitialTouchX
+                    val dy = event.rawY - fabInitialTouchY
+                    if (dx * dx + dy * dy > 25) fabIsDragging = true
+                    fabParams.x = fabInitialX + dx.toInt()
+                    fabParams.y = fabInitialY + dy.toInt()
+                    windowManager.updateViewLayout(fabView, fabParams)
+                    true
+                }
+                MotionEvent.ACTION_UP -> {
+                    if (!fabIsDragging) {
+                        // 点击 → 翻译
+                        captureAndTranslate()
+                    }
+                    true
+                }
+                else -> false
+            }
+        }
+
+        fabView.setOnLongClickListener {
+            stopSelf()
+            true
+        }
+
+        windowManager.addView(fabView, fabParams)
+    }
+
+    private fun applyOverlayAlpha() {
+        val alpha = config.overlayAlpha
+        val root = overlayView.findViewById<View>(R.id.overlayRoot) ?: overlayView
+        val bg = root.background
+        if (bg is GradientDrawable) {
+            bg.setColor(Color.argb(alpha, 0, 0, 0))
+        } else {
+            root.setBackgroundColor(Color.argb(alpha, 0, 0, 0))
+        }
+    }
+
+    /**
+     * 截屏 → 裁剪悬浮窗区域下方 → OCR → 翻译 → 显示
+     */
+    private fun captureAndTranslate() {
+        val tvTranslation = overlayView.findViewById<TextView>(R.id.tvTranslation)
+        val progressBar = overlayView.findViewById<ProgressBar>(R.id.progressBar)
+
+        progressBar.visibility = View.VISIBLE
+        tvTranslation.text = "识别中..."
+
+        // 先隐藏悬浮窗和按钮以捕获下方内容
+        overlayView.visibility = View.INVISIBLE
+        fabView.visibility = View.INVISIBLE
+        windowManager.updateViewLayout(overlayView, params)
+        windowManager.updateViewLayout(fabView, fabParams)
+
+        // 延迟一帧后截屏，确保悬浮窗已隐藏
+        handler.postDelayed({
+            // 恢复显示
+            overlayView.visibility = View.VISIBLE
+            fabView.visibility = View.VISIBLE
+            windowManager.updateViewLayout(overlayView, params)
+            windowManager.updateViewLayout(fabView, fabParams)
+
+            // 使用缓存的最新帧
+            val bitmap = latestBitmap?.copy(Bitmap.Config.ARGB_8888, false)
+
+            if (bitmap == null) {
+                val msg = when {
+                    mediaProjection == null -> "截屏失败：未获取到截屏授权，请重新点击「开始翻译」并在弹窗中点「立即开始」"
+                    imageReader == null -> "截屏失败：图像读取器未初始化"
+                    virtualDisplay == null -> "截屏失败：虚拟显示器创建失败"
+                    else -> "截屏失败：暂未捕获到屏幕画面，请稍后重试"
+                }
+                Log.e(TAG, msg)
+                tvTranslation.text = msg
+                progressBar.visibility = View.GONE
+                return@postDelayed
+            }
+
+            // 裁剪悬浮窗区域对应的屏幕内容
+            val cropBitmap = cropOverlayRegion(bitmap)
+            bitmap.recycle()
+
+            if (cropBitmap == null) {
+                tvTranslation.text = "裁剪截图失败"
+                progressBar.visibility = View.GONE
+                return@postDelayed
+            }
+
+            // OCR 识别
+            performOcr(cropBitmap) { ocrText ->
+                cropBitmap.recycle()
+
+                if (ocrText.isBlank()) {
+                    tvTranslation.text = "未识别到文字"
+                    progressBar.visibility = View.GONE
+                    return@performOcr
+                }
+
+                tvTranslation.text = "翻译中...\n\n原文: $ocrText"
+
+                // 调用大模型翻译
+                serviceScope.launch {
+                    val result = translationApi.translate(ocrText)
+                    result.onSuccess { translated ->
+                        tvTranslation.text = translated
+                    }.onFailure { error ->
+                        tvTranslation.text = "翻译失败: ${error.message}\n\n原文: $ocrText"
+                    }
+                    progressBar.visibility = View.GONE
+                }
+            }
+        }, 200)
+    }
+
+
+
+    /**
+     * 裁剪悬浮窗位置对应的屏幕区域
+     */
+    private fun cropOverlayRegion(screenBitmap: Bitmap): Bitmap? {
+        return try {
+            val x = params.x.coerceIn(0, screenBitmap.width - 1)
+            val y = params.y.coerceIn(0, screenBitmap.height - 1)
+            val w = params.width.coerceAtMost(screenBitmap.width - x)
+            val h = params.height.coerceAtMost(screenBitmap.height - y)
+            if (w <= 0 || h <= 0) return null
+            Bitmap.createBitmap(screenBitmap, x, y, w, h)
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    /**
+     * 使用 ML Kit 进行 OCR 文字识别
+     */
+    private fun performOcr(bitmap: Bitmap, callback: (String) -> Unit) {
+        val image = InputImage.fromBitmap(bitmap, 0)
+
+        // 根据源语言选择不同的识别器
+        val recognizer = when (config.sourceLang) {
+            "中文" -> TextRecognition.getClient(ChineseTextRecognizerOptions.Builder().build())
+            "日语" -> TextRecognition.getClient(JapaneseTextRecognizerOptions.Builder().build())
+            "韩语" -> TextRecognition.getClient(KoreanTextRecognizerOptions.Builder().build())
+            else -> TextRecognition.getClient(TextRecognizerOptions.Builder().build())
+        }
+
+        recognizer.process(image)
+            .addOnSuccessListener { visionText ->
+                val fullText = visionText.text
+                handler.post { callback(fullText) }
+            }
+            .addOnFailureListener { e ->
+                handler.post { callback("") }
+            }
+    }
+
+    private fun createNotificationChannel() {
+        val channel = NotificationChannel(
+            CHANNEL_ID,
+            getString(R.string.notification_channel),
+            NotificationManager.IMPORTANCE_LOW
+        )
+        val manager = getSystemService(NotificationManager::class.java)
+        manager.createNotificationChannel(channel)
+    }
+
+    private fun createNotification(): Notification {
+        val pendingIntent = PendingIntent.getActivity(
+            this, 0,
+            Intent(this, MainActivity::class.java),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+
+        return Notification.Builder(this, CHANNEL_ID)
+            .setContentTitle(getString(R.string.notification_title))
+            .setContentText(getString(R.string.notification_text))
+            .setSmallIcon(android.R.drawable.ic_menu_edit)
+            .setContentIntent(pendingIntent)
+            .build()
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        instance = null
+        try { windowManager.removeView(overlayView) } catch (_: Exception) {}
+        try { windowManager.removeView(fabView) } catch (_: Exception) {}
+        cleanupProjection()
+        mediaProjection?.stop()
+        mediaProjection = null
+        serviceScope.cancel()
+    }
+}

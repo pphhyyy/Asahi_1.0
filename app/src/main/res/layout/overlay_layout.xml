@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="utf-8"?>
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/overlayRoot"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@drawable/overlay_background">
+
+    <!-- 翻译结果图片（图片替换模式） -->
+    <ImageView
+        android:id="@+id/ivTranslation"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:scaleType="fitXY"
+        android:visibility="gone" />
+
+    <!-- 翻译结果文字（fallback / 状态文字） -->
+    <ScrollView
+        android:id="@+id/scrollResult"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent">
+
+        <TextView
+            android:id="@+id/tvTranslation"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text=""
+            android:textColor="@color/translated_text"
+            android:textSize="14sp"
+            android:padding="10dp"
+            android:lineSpacingExtra="2dp" />
+    </ScrollView>
+
+    <!-- 加载指示 -->
+    <ProgressBar
+        android:id="@+id/progressBar"
+        android:layout_width="28dp"
+        android:layout_height="28dp"
+        android:layout_gravity="center"
+        android:visibility="gone" />
+
+    <!-- 隐藏按钮 -->
+    <TextView
+        android:id="@+id/btnMinimize"
+        android:layout_width="24dp"
+        android:layout_height="24dp"
+        android:layout_gravity="top|end"
+        android:layout_margin="4dp"
+        android:gravity="center"
+        android:text="−"
+        android:textColor="#FFFFFF"
+        android:textSize="16sp"
+        android:textStyle="bold"
+        android:background="#44FFFFFF" />
+
+</FrameLayout>

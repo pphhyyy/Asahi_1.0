@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">实时翻译</string>
+    <string name="start_overlay">开始翻译</string>
+    <string name="stop_overlay">停止翻译</string>
+    <string name="settings">设置</string>
+    <string name="api_key">API Key</string>
+    <string name="api_url">API URL</string>
+    <string name="save">保存</string>
+    <string name="source_lang">源语言</string>
+    <string name="target_lang">目标语言</string>
+    <string name="notification_channel">翻译服务</string>
+    <string name="notification_title">实时翻译运行中</string>
+    <string name="notification_text">点击返回应用</string>
+    <string name="api_key_hint">输入你的 API Key</string>
+    <string name="api_url_hint">例如: https://api.openai.com/v1/chat/completions</string>
+    <string name="api_model_hint">例如: gpt-4o-mini 或 deepseek-chat</string>
+    <string name="api_model">模型名称</string>
+    <string name="grant_overlay_permission">请授予悬浮窗权限</string>
+    <string name="grant_permission">去授权</string>
+    <string name="accessibility_service_description">用于拦截外接键盘/手柄按键，触发翻译和清除操作。仅在按键绑定功能启用时使用。</string>
+</resources>
